@@ -1,2 +1,9 @@
 client_id.txt
 client_secret.txt
+app_specific_password.txt
+username.txt
+
+# see https://github.com/github/gitignore/blob/master/Python.gitignore
+__pycache__/
+*.py[cod]
+*$py.class
