@@ -3,7 +3,7 @@
 # from sys import stdin
 # import collections as coll
 # import operator as ops
-# import itertools as itt
+import itertools as itt
 from functools import partial as curry
 # import math
 import re
@@ -51,3 +51,5 @@ def dict_merge(a, b):
     res = a.copy()
     res.update(b)
     return res
+
+flatten = itt.chain.from_iterable

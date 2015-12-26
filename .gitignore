@@ -1,7 +1,9 @@
 client_id.txt
 client_secret.txt
 app_specific_password.txt
+access_token.txt
 username.txt
+private\ notes/*
 
 # see https://github.com/github/gitignore/blob/master/Python.gitignore
 __pycache__/
