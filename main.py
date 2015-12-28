@@ -4,6 +4,7 @@ from pprint import pprint
 import utils
 import os
 import operator as ops
+import copy
 
 import requests
 from urllib import urlencode
@@ -66,10 +67,9 @@ class OGS_API_Agent(object):
         response = requests.post(url, data=values, headers=headers)
 
         # 3) Read response
-        # all we want is the access token:
-        if not response.ok:
-            raise Exception, "Token generation failed"
-        return response.json()["access_token"]
+        return utils.Either.from_response(response).fmap_right(
+            (lambda value: value["access_token"])
+        )
 
     def log(self, msg):
         print msg
@@ -94,10 +94,7 @@ class OGS_API_Agent(object):
         response = requests.get(url, headers=headers)
 
         # 3) Read response
-        # TODO: error handling
-        if not response.ok:
-            raise Exception, "Request failed"
-        return response.json()
+        return utils.Either.from_response(response)
 
     def post(self, url, data, params={}, headers={}):
         # 1) Prepare parameters
@@ -114,33 +111,31 @@ class OGS_API_Agent(object):
         response = requests.post(url, data=data, headers=headers)
 
         # 3) Read response
-        # TODO: error handling
-        if not response.ok:
-            raise Exception, "Request failed"
-        return response.json()
+        return utils.Either.from_response(response)
 
     # Convinience / testing functions
     def sget(self, url_stub, all=False, *args, **kwargs):
         proc = self.get_all if all else self.get
-        return proc(self.stub(url_stub), *args, **kwargs)
+        return proc(self.stub(url_stub), *args, **kwargs).fmap_left(
+            (lambda resp: "Request failed: %s"%resp.text)
+        )
 
     def spost(self, url_stub, *args, **kwargs):
-        return self.post(self.stub(url_stub), *args, **kwargs)
+        return self.post(self.stub(url_stub), *args, **kwargs).fmap_left(
+            (lambda resp: "Request failed: %s"%resp.text)
+        )
 
-    @utils.pipeto(list)
-    @utils.pipeto(utils.flatten)
-    def get_all(self, url, params={}, headers={}):
-        # TODO: clean
+    def get_all(self, url, params={}, headers={}, LIMIT=1000):
         data = self.get(url, params=params, headers=headers)
-        if data["count"] > 1000:
-            raise Exception, "I won't get that many records; it's just too many"
+        if data["count"] > LIMIT:
+            return utils.Either(False, "You are not allowed to retrieve more than %d records at once"%LIMIT)
         else:
-            yield data["results"]
+            aggregate = copy.copy(data["results"])
             while data["next"]:
                 next_url = data["next"]
-                print "Fetching next page:", next_url
                 data = self.get(next_url, headers=headers) # TODO: include headers here?
-                yield data["results"]
+                aggregate.extend(data["results"])
+            return utils.Either(True, aggregate)
 
     @classmethod
     def sort_by(klass, game_list, fields):
@@ -194,26 +189,30 @@ class OGS_Game_Agent(OGS_API_Agent):
         game = self.get_game(game_id)
         self.size = game["width"]
         assert self.size == game["height"]
-        assert self.size in [9, 13, 19]
+        assert self.size in [9]#, 13, 19]
         self.board = Board.from_moves(self.size, game["gamedata"]["moves"])
 
     def play(self, coord):
-        self.spost("games/%d/move"%self.game_id,
+        return self.spost("games/%d/move"%self.game_id,
             data='{"move": "%s"}'%coord.api_repr(),
             headers={"Content-Type": "application/json"}
-        ) # TODO: this could raise an exception
-        self.board.play(coord)
+        ).fmap(
+            (lambda json: self.board.play(coord)),
+            (lambda error: "Could not play move: %s"%error),
+        ).extract()
 
-    # Convinience method:
+    # Convenience method:
     def vplay(self, coord_str):
         self.play(Coord.from_visual(coord_str))
 
     def pass_(self):
-        self.spost("games/%d/pass"%self.game_id,
+        return self.spost("games/%d/pass"%self.game_id,
             data="",
             headers={"Content-Type": "application/json"}
-        ) # TODO: this could raise an exception
-        self.board.toggle_player()
+        ).fmap(
+            (lambda json: self.board.toggle_player()),
+            (lambda error: "Could not pass: %s"%error),
+        ).extract()
 
 class Board(object):
     NONE = 0
@@ -258,6 +257,7 @@ class Board(object):
 
     def get(self, x, y):
         return self.rows[y][x]
+
     @utils.pipeto("\n".join)
     def __str__(self):
         symbols = {self.BLACK: "B", self.WHITE: "W", self.NONE: "+"}
@@ -297,6 +297,12 @@ def print_current_interesting_games():
     )
     pprint(agent.sort_by(games, sort_fields))
 
-gid = 3578876 # TODO: remove
-ag = OGS_API_Agent()
-p = OGS_Game_Agent(gid)
+def manual_game(game_id):
+    agent = OGS_Game_Agent(game_id)
+    while True:
+        inp = raw_input("> ").strip()
+        if inp == "q":
+            break
+        agent.vplay(inp)
+
+# manual_game(3580629)

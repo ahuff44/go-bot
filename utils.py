@@ -53,3 +53,65 @@ def dict_merge(a, b):
     return res
 
 flatten = itt.chain.from_iterable
+
+class Either(object):
+    # See http://hackage.haskell.org/package/base-4.8.1.0/docs/Data-Either.html
+
+    def __init__(self, is_right, value):
+        self.is_right = is_right
+        self.value = value
+
+    def __getitem__(self, key):
+        if self.is_right:
+            return self.value[key]
+        else:
+            # do nothing if this is an error object
+            return self
+
+    def fmap(self, if_right, if_left):
+        if self.is_right:
+            return Either(True, if_right(self.value))
+        else:
+            return Either(False, if_left(self.value))
+
+    def fmap_right(self, op):
+        return self.fmap(op, (lambda x: x))
+
+    def fmap_left(self, op):
+        return self.fmap((lambda x: x), op)
+
+    def extract(self):
+        if self.is_right:
+            return self.value
+        else:
+            raise Exception(self.value)
+
+    def __bool__(self):
+        return is_right
+    __nonzero__=__bool__
+
+    def __str__(self):
+        return "Either(%s, %s)"%(str(self.is_right), str(self.value))
+
+    # TODO fix these? probably a better idea would be to implement >>= externally
+    # def __getattribute__(self, name):
+    #     if self.is_right:
+    #         return self.value.__getattribute__(name)
+    #     else:
+    #         # do nothing if this is an error object
+    #         return self
+
+    # def __setattr__(self, name, value):
+    #     if self.is_right:
+    #         self.value.__setattr__(name, value)
+    #     else:
+    #         # do nothing if this is an error object
+    #         pass
+
+    @classmethod
+    def from_response(klass, response):
+        if response.ok:
+            return Either(True, response.json())
+        else:
+            return Either(False, response)
+
