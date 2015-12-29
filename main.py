@@ -3,6 +3,7 @@
 from pprint import pprint
 import utils
 import os
+from time import sleep
 import operator as ops
 import copy
 
@@ -146,41 +147,75 @@ class OGS_API_Agent(object):
         return self.sget("games/%d"%game_id)
 
 class Coord(object):
-    # TODO: extend beyond 9x9
+    API_STRINGS = {
+        9: ("abcdefghi", "abcdefghi"),
+        13: ("abcdefghijklm", "abcdefghijklm"),
+        19: ("abcdefghijklmnopqrs", "abcdefghijklmnopqrs"),
+    }
+    VISUAL_STRINGS = {
+        9: ("ABCDEFGHJ", map(str, range(9, 0, -1))),
+        13: ("ABCDEFGHJKLMN", map(str, range(13, 0, -1))),
+        19: ("ABCDEFGHJKLMNOPQRST", map(str, range(19, 0, -1))),
+    }
 
-    def __init__(self, x, y):
+    @classmethod
+    def from_api(klass, size, coord_str):
+        if len(coord_str) != 2:
+            raise Exception, "Bad length coord"
+        cx, cy = coord_str
+        return klass(size,
+            klass.API_STRINGS[size][0].index(cx),
+            klass.API_STRINGS[size][1].index(cy)
+        )
+
+    @classmethod
+    def from_visual(klass, size, coord_str):
+        if len(coord_str) not in [2, 3]:
+            raise Exception, "Bad length coord_str"
+        cx, cy = coord_str[0], coord_str[1:]
+        return klass(size,
+            klass.VISUAL_STRINGS[size][0].index(cx.upper()),
+            klass.VISUAL_STRINGS[size][1].index(cy)
+        )
+
+    @classmethod
+    def from_numeric(klass, size, coord):
+        if len(coord) != 2:
+            raise Exception, "Bad length coord"
+        cx, cy = coord
+        return klass(size, cx, cy)
+
+    def __init__(self, size, x, y):
+        self.size = size
         self.x = x
         self.y = y
 
-    @classmethod
-    def from_api(klass, coord):
-        if len(coord) != 2:
-            raise Exception, "Bad length coord"
-        cx, cy = coord
-        return klass("abcdefghi".index(cx), "abcdefghi".index(cy))
-
-    @classmethod
-    def from_visual(klass, coord):
-        if len(coord) != 2:
-            raise Exception, "Bad length coord"
-        cx, cy = coord
-        return klass("ABCDEFGHJ".index(cx.upper()), "987654321".index(cy))
-
-    @classmethod
-    def from_numeric(klass, coord):
-        if len(coord) != 2:
-            raise Exception, "Bad length coord"
-        cx, cy = coord
-        return klass(cx, cy)
-
     def api_repr(self):
-        return "abcdefghi"[self.x] + "abcdefghi"[self.y]
+        return "%s%s"%(
+            self.API_STRINGS[self.size][0][self.x],
+            self.API_STRINGS[self.size][1][self.y],
+        )
 
     def visual_repr(self):
-        return "ABCDEFGHJ"[self.x] + "987654321"[self.y]
+        return "%s%s"%(
+            self.VISUAL_STRINGS[self.size][0][self.x],
+            self.VISUAL_STRINGS[self.size][1][self.y],
+        )
 
     def numeric_repr(self):
         return self.x, self.y
+
+    def __eq__(self, other):
+        print "in __eq__"
+        print "self.size == other.size", self.size == other.size
+        print "self.numeric_repr() == other.numeric_repr()", self.numeric_repr() == other.numeric_repr()
+        print "self.size == other.size and self.numeric_repr() == other.numeric_repr()", self.size == other.size and self.numeric_repr() == other.numeric_repr()
+        return self.size == other.size and self.numeric_repr() == other.numeric_repr()
+
+    def __ne__(self, other):
+        return not (self == other)
+
+    __str__ = visual_repr
 
 class OGS_Game_Agent(OGS_API_Agent):
     def __init__(self, game_id):
@@ -189,7 +224,7 @@ class OGS_Game_Agent(OGS_API_Agent):
         game = self.get_game(game_id)
         self.size = game["width"]
         assert self.size == game["height"]
-        assert self.size in [9]#, 13, 19]
+        assert self.size in [9, 13, 19]
         self.board = Board.from_moves(self.size, game["gamedata"]["moves"])
 
     def play(self, coord):
@@ -201,9 +236,32 @@ class OGS_Game_Agent(OGS_API_Agent):
             (lambda error: "Could not play move: %s"%error),
         ).extract()
 
+    def wait_for_opponent_move(self, last_coord, poll_period=5, max_poll_attempts=10):
+        for attempt_num in xrange(max_poll_attempts):
+            self.log("Poll attempt #%d..."%attempt_num)
+            game = self.get_game(self.game_id)
+            x, y, time = game["gamedata"]["moves"][-1]
+            # TODO: -1, -1 means pass apparently... hmm this is awkward to implement...
+            # TODO: maybe just use requests.request(timeout=60) instead
+            # TODO: look into the ggs.ogs real-time api
+            coord = Coord.from_numeric(self.size, (x, y))
+            if last_coord != coord:
+                print "Recieved opponent's move:", coord
+                return utils.Either(True, coord)
+            sleep(poll_period)
+        return utils.Either(False, "Gave up polling for opponent response")
+
     # Convenience method:
     def vplay(self, coord_str):
-        self.play(Coord.from_visual(coord_str))
+        coord = Coord.from_visual(self.size, coord_str)
+        # print self.board
+        # raw_input("about to play()")
+        self.play(coord)
+        his_coord = self.wait_for_opponent_move(coord).extract()
+        # print self.board
+        # print his_coord
+        # raw_input("got response; about to play()")
+        self.board.play(his_coord)
 
     def pass_(self):
         return self.spost("games/%d/pass"%self.game_id,
@@ -232,7 +290,7 @@ class Board(object):
         # it will be 0-based elements of the form [x, y, time] TODO: is this time? I assume it is
         board = klass.empty_board(size)
         for x, y, time in dirty_moves:
-            board.play(Coord(x, y))
+            board.play(Coord.from_numeric(size, (x, y)))
         return board
 
     def __init__(self, rows):
@@ -251,6 +309,7 @@ class Board(object):
         # Plays the given move and toggles the current player (white <-> black)
         self.set(coord.numeric_repr(), self.player)
         self.toggle_player()
+        return coord
 
     def set(self, (x, y), value):
         self.rows[y][x] = value
@@ -260,9 +319,14 @@ class Board(object):
 
     @utils.pipeto("\n".join)
     def __str__(self):
+        size = len(self.rows)
         symbols = {self.BLACK: "B", self.WHITE: "W", self.NONE: "+"}
-        for row in self.rows:
-            yield "".join(map(lambda entry: symbols[entry], row))
+        yield "  ABCDEFGHJKLMNOPQRST"[:size+2]
+        for i, row in enumerate(self.rows):
+            yield "%2d"%(size-i) + "".join(map(lambda entry: symbols[entry], row))
+        yield "--------------"
+        yield "current player: %s"%symbols[self.player]
+        yield "--------------"
 
 MINUTES = 60
 HOURS = 60*MINUTES
@@ -297,12 +361,25 @@ def print_current_interesting_games():
     )
     pprint(agent.sort_by(games, sort_fields))
 
-def manual_game(game_id):
-    agent = OGS_Game_Agent(game_id)
+def tapprint(msg, continuation):
+    def res(*args, **kwargs):
+        print msg
+        return continuation(*args, **kwargs)
+    return res
+
+class Go_Strategy(object):
+    def __init__(self, arg):
+        self.arg = arg
+    # TODO: implement 2 strategies, one for player input, one for waiting for the billy gnu go bot
+
+def manual_game(agent):
     while True:
+        print agent.board
         inp = raw_input("> ").strip()
         if inp == "q":
             break
         agent.vplay(inp)
 
-# manual_game(3580629)
+gid = 3581924
+p = OGS_Game_Agent(gid)
+manual_game(p)
