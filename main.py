@@ -284,9 +284,14 @@ class Board(object):
         yield "--------------"
 
 class Go_Strategy(object):
+    # TODO: look into making this an ABC maybe: https://docs.python.org/2/library/abc.html
     def play(self, board):
         # Board -> Either(Move)
-        # TODO: return Pass()
+        raise NotImplementedError( "Should have implemented this" )
+
+class Always_Pass(Go_Strategy):
+    def play(self, board):
+        # TODO: s/Coord(...)/Pass()
         return utils.Either(True, Coord.from_numeric(board.size, (-1, -1)))
 
 class OGS_Reciever_Strategy(Go_Strategy):
@@ -403,28 +408,23 @@ def tapprint(msg, continuation):
     return res
 
 def play_game(p1, p2, fetch_board):
+    # assumes p1 will go first
     board = fetch_board()
     e_p2_move = utils.Either(True, None)
     while True:
-        e_p1_move = None
-        while not e_p1_move:
-            print "Asking p1 for a move..."
-            e_p1_move = p1.play(board, e_p2_move.contents())
-            if type(e_p1_move) != type(utils.Either(True, 0)):
-                raise Exception, "Bad return type from Go_Strategy interface; must return an Either"
-            # TODO: also enforce that board has one new move... another reason to make a Game() object
+        e_p1_move = p1.play(board, e_p2_move.contents())
+        if type(e_p1_move) != type(utils.Either(True, 0)):
+            raise Exception, "Bad return type from Go_Strategy interface; must return an Either"
+        # TODO: also enforce that board has one new move... another reason to make a Game() object
         print "Got p1's move: {}".format(e_p1_move.contents())
 
         # TODO: replace with if board != fetch_board(): raise Error
         board = fetch_board()
 
-        e_p2_move = None
-        while not e_p2_move:
-            print "Asking p2 for a move..."
-            e_p2_move = p2.play(board, e_p1_move.contents())
-            if type(e_p1_move) != type(utils.Either(True, 0)): # TODO: this is ugly
-                raise Exception, "Bad return type from Go_Strategy interface; must return an Either"
-            # TODO: also enforce that board has one new move... another reason to make a Game() object
+        e_p2_move = p2.play(board, e_p1_move.contents())
+        if type(e_p1_move) != type(utils.Either(True, 0)): # TODO: this is ugly
+            raise Exception, "Bad return type from Go_Strategy interface; must return an Either"
+        # TODO: also enforce that board has one new move... another reason to make a Game() object
         print "Got p2's move: {}".format(e_p2_move.contents())
 
         # TODO: replace with if board != fetch_board(): raise Error

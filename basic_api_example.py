@@ -39,6 +39,6 @@ print "Access token:\n\t", access_token
 games_url = "https://online-go.com/api/v1/me/games/?started__isnull=False&ended__isnull=True"
 games_headers = {"Authorization": "Bearer " + access_token}
 games_response = requests.get(games_url, headers=games_headers)
-game_id = games_response.json()["results"][0]["id"] # Yeah, this is confusing, sorry. This is just a quick example
-print "One of your active games:\n\thttp://online-go.com/game/%d"%game_id
+game_id = games_response.json()["results"][0]["id"] # Yeah, this is confusing, sorry. It's not too hard to figure out when you dig into it
+print "One of your active games:\n\thttps://online-go.com/game/%d"%game_id
 

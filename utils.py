@@ -37,17 +37,47 @@ def pipeto(post):
 @pipeto(dict)
 def grep(dictionary, grep_str, recursive=False):
     """ Filters a dictionary by only retaining keys that match the given regular expression
+        To be used on JSON objects.
         Inspired by Ruby Enumerables' grep: http://ruby-doc.org/core-2.1.0/Enumerable.html#method-i-grep
-        Example:
+        Ex:
             > grep({"123abc": 10, "def456": 20, "x7y8z9": 30}, r"[a-z]{3}")
             {'123abc': 10, 'def456': 20}
     """
     for key, val in dictionary.iteritems():
         if re.search(grep_str, key):
             yield key, val
-        if recursive and type(val) == dict:
-            yield key, grep(val, grep_str, recursive)
-rgrep = curry(grep, recursive=True)
+
+def rgrep(obj, grep_str):
+    """ Similar to grep, but recursive.
+        To be used on JSON objects.
+        Ex:
+            > rgrep({"a1": {"x": 1, "a2": 2}, "b1": {"b2": 3}, "x": 4}, "x")
+            {'a1': {'x': 1}, 'x': 4}
+    """
+    has_bottom, results = _rgrep_helper(obj, grep_str)
+    return results
+
+def _rgrep_helper(obj, grep_str):
+    if type(obj) == list:
+        results = list()
+        for rec_has_bottom, rec_results in map(curry(_rgrep_helper, grep_str=grep_str), obj):
+            if rec_has_bottom:
+                results.append(rec_results)
+        has_bottom = len(results) != 0
+        return has_bottom, results
+    elif type(obj) == dict:
+        results = dict()
+        for key, val in obj.iteritems():
+            if re.search(grep_str, key):
+                results[key] = val
+            elif type(val) == dict:
+                rec_has_bottom, rec_results = _rgrep_helper(val, grep_str)
+                if rec_has_bottom:
+                    results[key] = rec_results
+        has_bottom = len(results) != 0
+        return has_bottom, results
+    else:
+        raise TypeError("rgrep only works on dicts, lists of dicts, lists of lists of dicts, etc.")
 
 def file_to_string(filename):
     with open(filename, "r") as file_:
@@ -100,7 +130,7 @@ class Either(object):
     def __str__(self):
         return "Either(%s, %s)"%(str(self.is_right), str(self.value))
 
-    # TODO fix these? probably a better idea would be to implement >>= externally
+    # TODO: fix these? probably a better idea would be to implement >>= externally
     # def __getattribute__(self, name):
     #     if self.is_right:
     #         return self.value.__getattribute__(name)
