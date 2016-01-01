@@ -6,6 +6,7 @@ import os
 from time import sleep
 import operator as ops
 import copy
+import random
 
 import requests
 from urllib import urlencode
@@ -24,7 +25,7 @@ class OGS_API_Agent(object):
                 "app_specific_password.txt",
             ]:
             if not os.path.exists(path):
-                raise Exception, "You are missing some config files (specifically, %s)"%path
+                raise Exception, "You are missing some config files (specifically, ./%s)"%path
 
     @classmethod
     def stub(klass, api_endpoint):
@@ -119,12 +120,12 @@ class OGS_API_Agent(object):
         proc = self.get_all if all else self.get
         return proc(self.stub(url_stub), *args, **kwargs).fmap_left(
             (lambda resp: "Request failed: %s"%resp.text)
-        )
+        ).contents()
 
     def spost(self, url_stub, *args, **kwargs):
         return self.post(self.stub(url_stub), *args, **kwargs).fmap_left(
             (lambda resp: "Request failed: %s"%resp.text)
-        )
+        ).contents()
 
     def get_all(self, url, params={}, headers={}, LIMIT=1000):
         data = self.get(url, params=params, headers=headers)
@@ -139,13 +140,18 @@ class OGS_API_Agent(object):
             return utils.Either(True, aggregate)
 
     @classmethod
-    def sort_by(klass, game_list, fields):
-        key_func = lambda game: map(lambda field: ops.itemgetter(field)(game), fields)
-        return sorted(map(key_func, game_list))
+    def sort_key(klass, fields):
+        return lambda game: map(lambda field: ops.itemgetter(field)(game), fields)
+
+    @classmethod
+    def sort_map(klass, game_list, fields):
+        key = klass.sort_key(fields)
+        return map(key, sorted(games, key=key))
 
     def get_game(self, game_id):
         return self.sget("games/%d"%game_id)
 
+# TODO: add a Move = Coord | Pass datatype?
 class Coord(object):
     API_STRINGS = {
         9: ("abcdefghi", "abcdefghi"),
@@ -159,10 +165,7 @@ class Coord(object):
     }
 
     @classmethod
-    def from_api(klass, size, coord_str):
-        if len(coord_str) != 2:
-            raise Exception, "Bad length coord"
-        cx, cy = coord_str
+    def from_api(klass, size, (cx, cy)):
         return klass(size,
             klass.API_STRINGS[size][0].index(cx),
             klass.API_STRINGS[size][1].index(cy)
@@ -179,10 +182,7 @@ class Coord(object):
         )
 
     @classmethod
-    def from_numeric(klass, size, coord):
-        if len(coord) != 2:
-            raise Exception, "Bad length coord"
-        cx, cy = coord
+    def from_numeric(klass, size, (cx, cy)):
         return klass(size, cx, cy)
 
     def __init__(self, size, x, y):
@@ -206,71 +206,12 @@ class Coord(object):
         return self.x, self.y
 
     def __eq__(self, other):
-        print "in __eq__"
-        print "self.size == other.size", self.size == other.size
-        print "self.numeric_repr() == other.numeric_repr()", self.numeric_repr() == other.numeric_repr()
-        print "self.size == other.size and self.numeric_repr() == other.numeric_repr()", self.size == other.size and self.numeric_repr() == other.numeric_repr()
         return self.size == other.size and self.numeric_repr() == other.numeric_repr()
 
     def __ne__(self, other):
         return not (self == other)
 
     __str__ = visual_repr
-
-class OGS_Game_Agent(OGS_API_Agent):
-    def __init__(self, game_id):
-        super(self.__class__, self).__init__()
-        self.game_id = game_id
-        game = self.get_game(game_id)
-        self.size = game["width"]
-        assert self.size == game["height"]
-        assert self.size in [9, 13, 19]
-        self.board = Board.from_moves(self.size, game["gamedata"]["moves"])
-
-    def play(self, coord):
-        return self.spost("games/%d/move"%self.game_id,
-            data='{"move": "%s"}'%coord.api_repr(),
-            headers={"Content-Type": "application/json"}
-        ).fmap(
-            (lambda json: self.board.play(coord)),
-            (lambda error: "Could not play move: %s"%error),
-        ).extract()
-
-    def wait_for_opponent_move(self, last_coord, poll_period=5, max_poll_attempts=10):
-        for attempt_num in xrange(max_poll_attempts):
-            self.log("Poll attempt #%d..."%attempt_num)
-            game = self.get_game(self.game_id)
-            x, y, time = game["gamedata"]["moves"][-1]
-            # TODO: -1, -1 means pass apparently... hmm this is awkward to implement...
-            # TODO: maybe just use requests.request(timeout=60) instead
-            # TODO: look into the ggs.ogs real-time api
-            coord = Coord.from_numeric(self.size, (x, y))
-            if last_coord != coord:
-                print "Recieved opponent's move:", coord
-                return utils.Either(True, coord)
-            sleep(poll_period)
-        return utils.Either(False, "Gave up polling for opponent response")
-
-    # Convenience method:
-    def vplay(self, coord_str):
-        coord = Coord.from_visual(self.size, coord_str)
-        # print self.board
-        # raw_input("about to play()")
-        self.play(coord)
-        his_coord = self.wait_for_opponent_move(coord).extract()
-        # print self.board
-        # print his_coord
-        # raw_input("got response; about to play()")
-        self.board.play(his_coord)
-
-    def pass_(self):
-        return self.spost("games/%d/pass"%self.game_id,
-            data="",
-            headers={"Content-Type": "application/json"}
-        ).fmap(
-            (lambda json: self.board.toggle_player()),
-            (lambda error: "Could not pass: %s"%error),
-        ).extract()
 
 class Board(object):
     NONE = 0
@@ -285,16 +226,18 @@ class Board(object):
         return klass(rows)
 
     @classmethod
-    def from_moves(klass, size, dirty_moves):
+    def from_game_api(klass, game):
         # dirty_moves is directly from the API, unsanitized.
         # it will be 0-based elements of the form [x, y, time] TODO: is this time? I assume it is
-        board = klass.empty_board(size)
-        for x, y, time in dirty_moves:
-            board.play(Coord.from_numeric(size, (x, y)))
+        board = klass.empty_board(game["width"])
+        for x, y, time in game["gamedata"]["moves"]:
+            board.play(Coord.from_numeric(board.size, (x, y)))
         return board
 
     def __init__(self, rows):
         self.rows = rows
+        self.size = len(rows)
+        assert all(self.size == len(r) for r in rows) # TODO: not an assert?
         self.player = self.BLACK
 
     def toggle_player(self):
@@ -314,8 +257,20 @@ class Board(object):
     def set(self, (x, y), value):
         self.rows[y][x] = value
 
-    def get(self, x, y):
+    def get(self, (x, y)):
         return self.rows[y][x]
+
+    def legal_coords(self):
+        return filter(self.is_legal, self._all_coords())
+
+    def is_legal(self, coord):
+        # TODO: implement properly
+        return self.get(coord.numeric_repr()) == self.NONE
+
+    def _all_coords(self):
+        for rr, row in enumerate(self.rows):
+            for cc, entry in enumerate(row):
+                yield Coord.from_numeric(self.size, (rr, cc))
 
     @utils.pipeto("\n".join)
     def __str__(self):
@@ -327,6 +282,86 @@ class Board(object):
         yield "--------------"
         yield "current player: %s"%symbols[self.player]
         yield "--------------"
+
+class Go_Strategy(object):
+    def play(self, board):
+        # Board -> Either(Move)
+        # TODO: return Pass()
+        return utils.Either(True, Coord.from_numeric(board.size, (-1, -1)))
+
+class OGS_Reciever_Strategy(Go_Strategy):
+    def __init__(self, game_id):
+        super(self.__class__, self).__init__()
+        self.game_id = game_id
+        self.api = OGS_API_Agent()
+
+    def play(self, board, last_move):
+        POLL_PERIOD = 5
+        MAX_POLL_ATTEMPTS = 10
+        for attempt_num in xrange(MAX_POLL_ATTEMPTS):
+            api.log("Poll attempt #%d..."%attempt_num)
+            game = self.api.get_game(self.game_id)
+
+            x, y, time = game["gamedata"]["moves"][-1]
+            coord = Coord.from_numeric(board.size, (x, y))
+
+            if last_move != coord:
+                print "Recieved opponent's move:", coord
+                return utils.Either(True, coord)
+            sleep(POLL_PERIOD)
+        return utils.Either(False, "Gave up polling for opponent response")
+
+class OGS_Sender_Strategy(Go_Strategy):
+    def __init__(self, game_id):
+        self.game_id = game_id
+        self.api = OGS_API_Agent()
+
+    def send_move(self, coord):
+        self.api.spost("games/%d/move"%self.game_id,
+            data='{"move": "%s"}'%coord.api_repr(),
+            headers={"Content-Type": "application/json"}
+        )
+
+    def send_pass(self):
+        self.api.spost("games/%d/pass"%self.game_id,
+            data="",
+            headers={"Content-Type": "application/json"}
+        )
+
+class User_Input_Strategy(OGS_Sender_Strategy):
+    def __init__(self, game_id):
+        super(self.__class__, self).__init__(game_id)
+
+    def play(self, board, last_move):
+        print board
+        inp = raw_input("> ")
+        if inp in ["p", "pass"]:
+            self.send_pass()
+            # TODO: return Pass()
+            return utils.Either(True, Coord.from_numeric(board.size, (-1, 1)))
+        else:
+            coord = Coord.from_visual(board.size, inp)
+            self.send_move(coord)
+            return utils.Either(True, coord)
+
+class Random_Strategy(OGS_Sender_Strategy):
+    def __init__(self, game_id):
+        super(self.__class__, self).__init__(game_id)
+
+    def play(self, board, last_move):
+        legal = board.legal_coords()
+        print "legal moves: {}".format(map(str, legal))
+        if legal:
+            coord = random.choice(list(legal))
+            print "randomly chose {}".format(coord)
+            self.send_move(coord)
+            return utils.Either(True, coord)
+        else:
+            # TODO: return Pass()
+            self.send_pass()
+            return utils.Either(True, Coord.from_numeric(board.size, (-1, 1)))
+
+
 
 MINUTES = 60
 HOURS = 60*MINUTES
@@ -367,19 +402,57 @@ def tapprint(msg, continuation):
         return continuation(*args, **kwargs)
     return res
 
-class Go_Strategy(object):
-    def __init__(self, arg):
-        self.arg = arg
-    # TODO: implement 2 strategies, one for player input, one for waiting for the billy gnu go bot
-
-def manual_game(agent):
+def play_game(p1, p2, fetch_board):
+    board = fetch_board()
+    e_p2_move = utils.Either(True, None)
     while True:
-        print agent.board
-        inp = raw_input("> ").strip()
-        if inp == "q":
-            break
-        agent.vplay(inp)
+        e_p1_move = None
+        while not e_p1_move:
+            print "Asking p1 for a move..."
+            e_p1_move = p1.play(board, e_p2_move.contents())
+            if type(e_p1_move) != type(utils.Either(True, 0)):
+                raise Exception, "Bad return type from Go_Strategy interface; must return an Either"
+            # TODO: also enforce that board has one new move... another reason to make a Game() object
+        print "Got p1's move: {}".format(e_p1_move.contents())
 
-gid = 3581924
-p = OGS_Game_Agent(gid)
-manual_game(p)
+        # TODO: replace with if board != fetch_board(): raise Error
+        board = fetch_board()
+
+        e_p2_move = None
+        while not e_p2_move:
+            print "Asking p2 for a move..."
+            e_p2_move = p2.play(board, e_p1_move.contents())
+            if type(e_p1_move) != type(utils.Either(True, 0)): # TODO: this is ugly
+                raise Exception, "Bad return type from Go_Strategy interface; must return an Either"
+            # TODO: also enforce that board has one new move... another reason to make a Game() object
+        print "Got p2's move: {}".format(e_p2_move.contents())
+
+        # TODO: replace with if board != fetch_board(): raise Error
+        board = fetch_board()
+
+        # TODO: end if both pass
+
+def play_ogs_game(gid, p1, p2):
+    # TODO: decouple api and game
+    api = OGS_API_Agent()
+    def fetch_board():
+        game = api.get_game(gid)
+        size = game["width"]
+        return Board.from_game_api(game)
+    play_game(p1, p2, fetch_board)
+
+api = OGS_API_Agent()
+games = api.sget(
+    "me/games",
+    all=True,
+    params={
+        "started__isnull": False,
+        "ended__isnull": True,
+    },
+)
+gid = sorted(games, key=api.sort_key(("started",)))[0]["id"]
+# gid = 3581924
+go = lambda: play_ogs_game(gid, Random_Strategy(gid), OGS_Reciever_Strategy(gid))
+
+g = OGS_API_Agent().get_game(gid)
+b = Board.from_game_api(g)

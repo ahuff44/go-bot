@@ -10,14 +10,18 @@ import re
 # import random
 # import sys
 from pprint import pprint
-# from fractions import Fraction as Frac
+# from fractions import Fraction
 # from time import time
 
-def nary(func):
+def nary(func, **kwargs):
     """ Turns a binary function into an n-ary function """
-    def wrapped(*args):
-        return reduce(func, args)
-    return wrapped
+    bad_args = set(kwargs.keys()) - set(["default"])
+    if bad_args:
+        raise TypeError("nary() got an unexpected keyword argument '{}'".format(bad_args.pop()))
+    if "default" in kwargs.keys():
+        return lambda *args: reduce(func, args, kwargs["default"])
+    else:
+        return lambda *args: reduce(func, args)
 
 @nary
 def compose(f, g):
@@ -31,16 +35,19 @@ def pipeto(post):
     return decorator
 
 @pipeto(dict)
-def grep(dictionary, grep_str):
+def grep(dictionary, grep_str, recursive=False):
     """ Filters a dictionary by only retaining keys that match the given regular expression
         Inspired by Ruby Enumerables' grep: http://ruby-doc.org/core-2.1.0/Enumerable.html#method-i-grep
         Example:
-            > grep({"123abc": 10, "defghi": 20, "123xy": 30}, r"[a-z]{3}")
-            {'123abc': 10, 'defghi': 20}
+            > grep({"123abc": 10, "def456": 20, "x7y8z9": 30}, r"[a-z]{3}")
+            {'123abc': 10, 'def456': 20}
     """
     for key, val in dictionary.iteritems():
         if re.search(grep_str, key):
             yield key, val
+        if recursive and type(val) == dict:
+            yield key, grep(val, grep_str, recursive)
+rgrep = curry(grep, recursive=True)
 
 def file_to_string(filename):
     with open(filename, "r") as file_:
@@ -80,14 +87,14 @@ class Either(object):
     def fmap_left(self, op):
         return self.fmap((lambda x: x), op)
 
-    def extract(self):
+    def contents(self):
         if self.is_right:
             return self.value
         else:
             raise Exception(self.value)
 
     def __bool__(self):
-        return is_right
+        return self.is_right
     __nonzero__=__bool__
 
     def __str__(self):
