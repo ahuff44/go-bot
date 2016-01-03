@@ -44,7 +44,7 @@ class OGS_API_Agent(object):
             return token
 
     @classmethod
-    def _generate_access_token(klass):
+    def _generate_access_token(klass, user_file="gobot_user.cfg"):
         print "Generating a new access token..."
 
         # 1) Prepare parameters
@@ -53,12 +53,14 @@ class OGS_API_Agent(object):
         # Important: the files we read here should NOT be checked into source-control (e.g. git).
         # You'll have to create them yourself and add them to your .gitignore file
         # That's why we're reading them from local files, rather than having them be hard-coded strings
+        client_config = utils.config_as_dict("client.cfg")["client"]
+        user_config = utils.config_as_dict(user_file)["user"]
         values = urlencode({
-            "client_id":     utils.file_to_string("client_id.txt"), # generated on https://online-go.com/developer
-            "client_secret": utils.file_to_string("client_secret.txt"), # generated on https://online-go.com/developer
+            "client_id":     client_config["id"], # generated on https://online-go.com/developer
+            "client_secret": client_config["secret"], # generated on https://online-go.com/developer
             "grant_type":    "password",
-            "username":      utils.file_to_string("username.txt"), # contains your username
-            "password":      utils.file_to_string("app_specific_password.txt"), # generated on your user settings page
+            "username":      user_config["username"], # contains your username
+            "password":      user_config["app_specific_password"], # generated on your user settings page
         })
 
         headers = {

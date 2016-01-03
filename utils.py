@@ -7,6 +7,7 @@ import itertools as itt
 from functools import partial as curry
 # import math
 import re
+import ConfigParser
 # import random
 # import sys
 from pprint import pprint
@@ -82,6 +83,16 @@ def _rgrep_helper(obj, grep_str):
 def file_to_string(filename):
     with open(filename, "r") as file_:
         return '\n'.join(file_.readlines())
+
+# TODO: naming
+def config_as_dict(filename):
+    parser = ConfigParser.ConfigParser()
+    parser.read(filename)
+
+    return {
+        section: {key: val for key, val in parser.items(section)}
+        for section in parser.sections()
+    }
 
 @nary
 def dict_merge(a, b):
