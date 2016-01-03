@@ -19,10 +19,8 @@ class OGS_API_Agent(object):
     @classmethod
     def ensure_config_files_exist(klass):
         for path in [
-                "client_id.txt",
-                "client_secret.txt",
-                "username.txt",
-                "app_specific_password.txt",
+                "gobot_user.cfg",
+                "client.cfg",
             ]:
             if not os.path.exists(path):
                 raise Exception, "You are missing some config files (specifically, ./%s)"%path
@@ -53,15 +51,15 @@ class OGS_API_Agent(object):
         # Important: the files we read here should NOT be checked into source-control (e.g. git).
         # You'll have to create them yourself and add them to your .gitignore file
         # That's why we're reading them from local files, rather than having them be hard-coded strings
-        client_config = utils.config_as_dict("client.cfg")["client"]
-        user_config = utils.config_as_dict(user_file)["user"]
+        client_config = utils.config_as_dict("client.cfg")["values"]
+        user_config = utils.config_as_dict(user_file)["values"]
         values = urlencode({
             "client_id":     client_config["id"], # generated on https://online-go.com/developer
             "client_secret": client_config["secret"], # generated on https://online-go.com/developer
             "grant_type":    "password",
             "username":      user_config["username"], # contains your username
             "password":      user_config["app_specific_password"], # generated on your user settings page
-        })
+        }) # TODO: document this better, probably with an example file or two
 
         headers = {
           'Content-Type': 'application/x-www-form-urlencoded'
@@ -73,7 +71,7 @@ class OGS_API_Agent(object):
         # 3) Read response
         return utils.Either.from_response(response).fmap_right(
             (lambda value: value["access_token"])
-        )
+        ).contents()
 
     def log(self, msg):
         print msg
@@ -119,10 +117,12 @@ class OGS_API_Agent(object):
 
     # Convinience / testing functions
     def sget(self, url_stub, all=False, *args, **kwargs):
-        proc = self.get_all if all else self.get
-        return proc(self.stub(url_stub), *args, **kwargs).fmap_left(
-            (lambda resp: "Request failed: %s"%resp.text)
-        ).contents()
+        if all:
+            return self.get_all(self.stub(url_stub), *args, **kwargs).contents()
+        else:
+            return self.get(self.stub(url_stub), *args, **kwargs).fmap_left(
+                (lambda resp: "Request failed: %s"%resp.text)
+            ).contents()
 
     def spost(self, url_stub, *args, **kwargs):
         return self.post(self.stub(url_stub), *args, **kwargs).fmap_left(
@@ -152,6 +152,33 @@ class OGS_API_Agent(object):
 
     def get_game(self, game_id):
         return self.sget("games/%d"%game_id)
+
+    def get_game_ids_where_its_my_turn(self):
+        # TODO: delete? / reorganize somewhere
+
+        # notifications = self.sget(
+        #     "me/notifications",
+        #     params={"type": "yourMove"},
+        # ) # TODO: report this bug; me/notifiations ignores params entirely it seems
+        notifications = self.sget("me/notifications")
+
+        return [
+            notif["game_id"]
+            for notif in notifications
+            if notif["type"] == "yourMove"
+        ]
+
+    def get_my_current_games(self):
+        # TODO: delete? / reorganize somewhere
+        games = self.sget(
+            "me/games",
+            all=True,
+            params={
+                "started__isnull": False,
+                "ended__isnull": True,
+            },
+        )
+        return sorted(games, key=self.sort_key(("started",)))
 
 # TODO: add a Move = Coord | Pass datatype?
 class Coord(object):
@@ -306,7 +333,7 @@ class OGS_Reciever_Strategy(Go_Strategy):
         POLL_PERIOD = 5
         MAX_POLL_ATTEMPTS = 10
         for attempt_num in xrange(MAX_POLL_ATTEMPTS):
-            api.log("Poll attempt #%d..."%attempt_num)
+            self.api.log("Poll attempt #%d..."%attempt_num)
             game = self.api.get_game(self.game_id)
 
             x, y, time = game["gamedata"]["moves"][-1]
@@ -357,10 +384,10 @@ class Random_Strategy(OGS_Sender_Strategy):
 
     def play(self, board, last_move):
         legal = board.legal_coords()
-        print "legal moves: {}".format(map(str, legal))
+        # print "legal moves: {}".format(map(str, legal))
         if legal:
             coord = random.choice(list(legal))
-            print "randomly chose {}".format(coord)
+            # print "randomly chose {}".format(coord)
             self.send_move(coord)
             return utils.Either(True, coord)
         else:
@@ -370,15 +397,16 @@ class Random_Strategy(OGS_Sender_Strategy):
 
 
 
-MINUTES = 60
-HOURS = 60*MINUTES
-DAYS = 24*HOURS
-YEARS = 365*DAYS
-
-LIVE_CUTOFF = 1*HOURS # Any game with less than an hour per move on average is considered "live"
-BLITZ_CUTOFF = 20 # Any game with less than a 20 seconds per move on average is considered "blitz"
-
 def print_current_interesting_games():
+    MINUTES = 60
+    HOURS = 60*MINUTES
+    DAYS = 24*HOURS
+    YEARS = 365*DAYS
+
+    LIVE_CUTOFF = 1*HOURS # Any game with less than an hour per move on average is considered "live"
+    BLITZ_CUTOFF = 20 # Any game with less than a 20 seconds per move on average is considered "blitz"
+
+
     agent = OGS_API_Agent()
     games = agent.get_all(
         agent.stub("/games/"),
@@ -439,22 +467,16 @@ def play_ogs_game(gid, p1, p2):
     api = OGS_API_Agent()
     def fetch_board():
         game = api.get_game(gid)
-        size = game["width"]
         return Board.from_game_api(game)
     play_game(p1, p2, fetch_board)
 
-api = OGS_API_Agent()
-games = api.sget(
-    "me/games",
-    all=True,
-    params={
-        "started__isnull": False,
-        "ended__isnull": True,
-    },
-)
-gid = sorted(games, key=api.sort_key(("started",)))[0]["id"]
+my_agent = OGS_API_Agent()
+# gid = my_agent.get_my_current_games()[0]["id"]
+
+gid = my_agent.get_game_ids_where_its_my_turn()[0]
+
 # gid = 3581924
 go = lambda: play_ogs_game(gid, Random_Strategy(gid), OGS_Reciever_Strategy(gid))
 
-g = OGS_API_Agent().get_game(gid)
+g = my_agent.get_game(gid)
 b = Board.from_game_api(g)
